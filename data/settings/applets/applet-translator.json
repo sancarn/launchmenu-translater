@@ -2,8 +2,8 @@
     "version": "0.0.0",
     "data": {
         "defaultSourceLanguage": {
-            "code": "en",
-            "name": "English"
+            "code": "auto",
+            "name": "Auto"
         },
         "defaultToLanguage": {
             "code": "auto",

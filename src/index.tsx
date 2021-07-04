@@ -12,6 +12,7 @@ import {
     createStringSetting,
     declare,
     highlightTags,
+    IHighlightNode,
     KeyPattern,
     Menu,
     Priority,
@@ -20,6 +21,7 @@ import {
     useIOContext,
 } from "@launchmenu/core";
 import execWithIndices from "regexp-match-indices";
+import {tokenList} from "@launchmenu/core/build/textFields/syntax/_tests/MathInterpreter.helper";
 
 const info = {
     name: "Translator",
@@ -171,97 +173,165 @@ export const settings = createSettings({
 //     }),
 // ];
 
-export const translationRegex =
-    /^(tr(?:anslate)?)\s*(?:(?<sl>\w{2})\s*)?(?:(?<tl>\w{2})?\s*):\s*(?<query>.*)/i;
+export const translationRegexTl = /^(?<h>tr(?:anslate)?)\s*(?<tl>\w{2})?\s*:\s*(?<q>.*)/i;
+export const translationRegexSlTl =
+    /^(?<h>tr(?:anslate)?)\s*(?<sl>\w{2})\s*(?<tl>\w{2})\s*:\s*(?<q>.*)/i;
+
+type IMatcherHelper = {
+    type: string;
+    value?: string;
+    indices?: number[];
+    valid?: boolean;
+    token?: keyof typeof highlightTags;
+};
 
 const searchPatternMatcher = createStandardSearchPatternMatcher({
     name: "Translator",
-    matcher: ({search, context}) => {
-        const match = execWithIndices(translationRegex, search);
-        if (match) {
-            let srcLang = match.groups?.sl;
-            let toLang = match.groups?.tl;
-
-            //If srcLang and toLang are present
-            let searchSettings: {
-                toLang: string;
-                srcLang: string;
-                query: string | undefined;
+    matcher: ({search, context}, hook) => {
+        const s = context.settings.get(settings);
+        const getMatcherHelper = (
+            code: string,
+            defaultCode: string,
+            indices?: number[] | undefined
+        ) => {
+            return {
+                value: code in languages ? code : defaultCode,
+                valid: code in languages,
+                indices,
             };
-            if (!!srcLang && !!toLang) {
-                searchSettings = {
-                    query: match.groups?.query,
-                    toLang,
-                    srcLang,
-                };
-                if (!(languages as any)[srcLang] || !(languages as any)[toLang])
-                    return {};
-            } else if (!toLang && !!srcLang) {
-                //If toLang not present but srcLang is then use default srcLang but use toLang as srcLang
-                searchSettings = {
-                    query: match.groups?.query,
-                    srcLang: context.settings.get(settings).defaultSourceLanguage.get()
-                        .code,
-                    toLang: srcLang,
-                };
-                if (!(languages as any)[srcLang]) return {};
-            } else if (!(!!toLang || !!srcLang)) {
-                //If neither srcLang or toLang are present then use defaults for srcLang and toLang
-                searchSettings = {
-                    query: match.groups?.query,
-                    srcLang: context.settings.get(settings).defaultSourceLanguage.get()
-                        .code,
-                    toLang: context.settings.get(settings).defaultToLanguage.get().code,
-                };
-            } else {
-                return {};
+        };
+
+        let searchSettings: IMatcherHelper[] | undefined;
+
+        let pt: execWithIndices.RegExpExecArray | null;
+        if ((pt = execWithIndices(translationRegexTl, search))) {
+            searchSettings = [
+                {
+                    type: "header",
+                    value: pt.groups?.h,
+                    indices: pt?.indices?.groups?.h,
+                    token: highlightTags.patternMatch,
+                    valid: true,
+                },
+                {
+                    type: "srcLang",
+                    ...getMatcherHelper("", s.defaultSourceLanguage.get(hook).code),
+                },
+                {
+                    type: "toLang",
+                    token: highlightTags.patternMatch,
+                    ...(pt.groups?.tl
+                        ? getMatcherHelper(
+                              pt.groups.tl,
+                              s.defaultSourceLanguage.get(hook).code,
+                              pt?.indices?.groups?.tl
+                          )
+                        : getMatcherHelper("", s.defaultToLanguage.get(hook).code)),
+                },
+                {
+                    type: "query",
+                    value: pt.groups?.q,
+                    indices: undefined,
+                },
+            ];
+        } else if ((pt = execWithIndices(translationRegexSlTl, search))) {
+            if (pt.groups?.sl && pt.groups?.tl) {
+                searchSettings = [
+                    {
+                        type: "header",
+                        value: pt.groups?.h,
+                        indices: pt?.indices?.groups?.h,
+                        token: highlightTags.patternMatch,
+                        valid: true,
+                    },
+                    {
+                        type: "srcLang",
+                        token: highlightTags.operator,
+                        ...getMatcherHelper(
+                            pt.groups?.sl,
+                            s.defaultSourceLanguage.get(hook).code,
+                            pt?.indices?.groups?.sl
+                        ),
+                    },
+                    {
+                        type: "toLang",
+                        token: highlightTags.literal,
+                        ...getMatcherHelper(
+                            pt.groups?.tl,
+                            s.defaultToLanguage.get(hook).code,
+                            pt?.indices?.groups?.tl
+                        ),
+                    },
+                    {
+                        type: "query",
+                        value: pt.groups?.q,
+                        indices: undefined,
+                    },
+                ];
             }
-            if (!match.groups?.query) return {};
-            let indices = match.indices
-                .filter(e => e)
-                .slice(1, match.indices.length - 2)
-                .map(arr => {
+        }
+
+        if (searchSettings) {
+            const highlight = searchSettings
+                .filter(e => e.indices)
+                .map(e => {
                     return {
-                        start: arr[0],
-                        end: arr[0] + arr[1],
-                        tags: [highlightTags.patternMatch],
+                        start: e.indices![0],
+                        end: e.indices![1],
+                        tags: e.valid
+                            ? e.token
+                                ? [e.token]
+                                : []
+                            : [highlightTags.error],
+                        text: "", //TODO: Required parameter at the time of writing
                     };
                 });
-
+            const query = searchSettings.find(e => e.type == "query");
             return {
                 name: "Translator",
-                query: match.groups?.query,
+                query: query ? query.value : "",
                 search: search,
                 metadata: searchSettings,
-                highlight: indices,
+                highlight,
             };
         }
     },
 });
 
+const cache: any = {};
 export default declare({
     info,
     settings,
     async search(query, hook) {
         const patternMatch = searchPatternMatcher(query, hook);
         if (patternMatch?.metadata) {
-            let {srcLang, toLang, query} = patternMatch?.metadata;
+            const searchSettings = patternMatch.metadata;
+            const settings = Object.fromEntries(
+                searchSettings.map(e => [e.type, e.value])
+            );
+            const {srcLang, toLang, query} = settings;
             if (query) {
-                console.log(
-                    `${googleTranslateUrl}&sl=${srcLang}&tl=${toLang}&q=${query}`
-                );
-                const response = await (
-                    await fetch(
-                        `${googleTranslateUrl}&sl=${srcLang}&tl=${toLang}&q=${query}`,
-                        {
-                            method: "GET",
-                            headers: {
-                                "content-type": "application/json",
-                            },
-                        }
-                    )
-                ).json();
-                console.log(response);
+                const id = [srcLang, toLang, query].join(",");
+                if (!cache[id]) {
+                    console.log("Querying google");
+                    cache[id] = await (
+                        await fetch(
+                            `${googleTranslateUrl}&sl=${srcLang}&tl=${toLang}&q=${query}`,
+                            {
+                                method: "GET",
+                                headers: {
+                                    "content-type": "application/json",
+                                },
+                            }
+                        )
+                    ).json();
+                }
+
+                //Get response from cache
+                const response = cache[id];
+
+                // const response = {sentences: [{trans: "poop"}]};
+                // console.log(response);
                 return {
                     patternMatch,
                     item: {
